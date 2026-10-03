@@ -106,11 +106,25 @@ impl Spline {
     pub fn parse(file: &CfgFile) -> Spline {
         let mut s = Spline { path: file.path.clone(), ..Default::default() };
         let mut r = file.reader();
+        // the texture the material statements go to: the last `[texture]`, or the one a
+        // `[matl]` named
+        let mut matl: Option<usize> = None;
         while let Some(k) = r.next_keyword() {
             match k.as_str() {
                 "length" => s.length = r.f32(),
                 "texture" => {
                     s.textures.push(SplineTexture { file: r.str().to_string(), ..Default::default() });
+                    matl = None;
+                }
+                "matl" => {
+                    // `[matl] <texture> <index>` as in a model.cfg: selects the texture the
+                    // following material statements change. The Simple Spline Editor writes
+                    // one after every `[texture]` (this installation: 5956 of 5969 name the texture
+                    // just begun, 13 another one; index 0 in 5981 of 6013), so without it the file counted as failed
+                    // although `[matl_alpha]` was already taken.
+                    let texture = r.str().to_string();
+                    let _index = r.i32();
+                    matl = s.textures.iter().rposition(|t| t.file.eq_ignore_ascii_case(&texture));
                 }
                 "scaletexbylength" => {
                     // (a flag of the last texture, Omsi.exe 0x5ac01f)
@@ -127,7 +141,8 @@ impl Spline {
                 }
                 "matl_alpha" => {
                     let a = r.i32();
-                    if let Some(t) = s.textures.last_mut() {
+                    let i = matl.or(s.textures.len().checked_sub(1));
+                    if let Some(t) = i.and_then(|i| s.textures.get_mut(i)) {
                         t.alpha = a;
                     }
                 }
@@ -178,5 +193,33 @@ impl Spline {
             }
         }
         s
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // `[matl] <texture> 0` after a `[texture]`, as the Simple Spline Editor writes it (2981 of
+    // the installation's 17 969 .sli): the material statements go to the named texture, and
+    // the keyword is known, so the file no longer counts as failed
+    #[test]
+    fn matl_selects_the_texture_for_the_material_statements() {
+        let text = "[texture]\r\nErde.jpg\r\n[matl]\r\nErde.jpg\r\n0\r\n[matl_alpha]\r\n2\r\n[texture]\r\nZaun.tga\r\n[matl]\r\nerde.JPG\r\n0\r\n[matl_alpha]\r\n1\r\n[profile]\r\n0\r\n[profilepnt]\r\n-2\r\n0.1\r\n0\r\n1\r\n";
+        let s = Spline::parse(&omsi_cfg::CfgFile::from_str("Feldweg_4m_1.sli", text));
+        assert!(s.unknown_keywords.is_empty(), "{:?}", s.unknown_keywords);
+        assert_eq!(s.textures.len(), 2);
+        // the second block names the first texture again (case-insensitively): it changes
+        // Erde.jpg, not the texture begun last
+        assert_eq!(s.textures[0].alpha, 1);
+        assert_eq!(s.textures[1].alpha, 0);
+    }
+
+    // without a `[matl]`, `[matl_alpha]` goes to the last texture as before
+    #[test]
+    fn matl_alpha_without_matl_goes_to_the_last_texture() {
+        let text = "[texture]\r\nA.jpg\r\n[texture]\r\nB.jpg\r\n[matl_alpha]\r\n1\r\n";
+        let s = Spline::parse(&omsi_cfg::CfgFile::from_str("x.sli", text));
+        assert_eq!((s.textures[0].alpha, s.textures[1].alpha), (0, 1));
     }
 }
