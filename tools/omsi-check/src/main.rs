@@ -392,31 +392,57 @@ fn check_scenery(root: &Path, verbose: bool) {
         })
         .collect();
     report("sco", files.len(), &errors, verbose);
-    let ignored = ignored.into_inner().unwrap();
-    if !ignored.is_empty() {
-        let mut by_count: Vec<(&String, &usize)> = ignored.iter().collect();
-        by_count.sort_by(|a, b| b.1.cmp(a.1).then(a.0.cmp(b.0)));
-        let total: usize = ignored.values().sum();
-        let shown: Vec<String> = by_count.iter().take(if verbose { usize::MAX } else { 8 }).map(|(k, n)| format!("[{k}] {n}")).collect();
-        println!("  note: {total} keywords Omsi.exe does not read in a .sco either (misspellings, keywords of other files), ignored as the original does: {}", shown.join(", "));
-    }
+    note_ignored("sco", &ignored.into_inner().unwrap(), verbose);
     let files = files_with_ext(root, &["sli"]);
+    // as for the objects: a keyword Omsi.exe does not read in a .sli ([heightproflile],
+    // [rendertype], [surface] ...) is noted, not a failure
+    let ignored: std::sync::Mutex<std::collections::BTreeMap<String, usize>> = Default::default();
     let errors: Vec<String> = files
         .par_iter()
         .filter_map(|p| match omsi_scenery::Spline::load(p) {
             Ok(s) => {
-                if s.unknown_keywords.is_empty() && !s.profiles.is_empty() {
-                    None
-                } else if s.unknown_keywords.is_empty() {
+                let mut unk: Vec<String> = Vec::new();
+                for (k, l) in &s.unknown_keywords {
+                    if omsi_reads_in_sli(k) {
+                        unk.push(format!("[{k}]@{l}"));
+                    } else {
+                        *ignored.lock().unwrap().entry(k.clone()).or_default() += 1;
+                    }
+                }
+                if unk.is_empty() {
                     None
                 } else {
-                    Some(format!("{}: unknown keywords {:?}", rel(root, p), s.unknown_keywords))
+                    Some(format!("{}: unknown keywords {}", rel(root, p), unk.join(" ")))
                 }
             }
             Err(e) => Some(format!("{}: {e}", rel(root, p))),
         })
         .collect();
     report("sli", files.len(), &errors, verbose);
+    note_ignored("sli", &ignored.into_inner().unwrap(), verbose);
+}
+
+/// The keywords Omsi.exe reads in a .sli (docs/FORMATS.md, "Splines"), and the material
+/// manager's, which the Simple Spline Editor writes after a `[texture]`.
+fn omsi_reads_in_sli(k: &str) -> bool {
+    const SLI: &[&str] = &[
+        "length", "texture", "scaletexbylength", "patchwork_chain", "heightprofile", "profile", "profilepnt", "path", "path_2", "rail_enh", "third_rail", "halfcantwidth", "onlyeditor",
+        "terrainholeprofile", "terrainholeprofilepnt", "matl", "matl_alpha", "matl_nozwrite", "matl_nozcheck", "matl_zbias", "matl_envmap", "matl_envmaprealtime", "matl_bumpmap",
+        "matl_envmap_mask", "matl_transmap",
+    ];
+    SLI.contains(&k.to_ascii_lowercase().as_str())
+}
+
+/// The note under a report: how many keywords the original ignores too, which ones most.
+fn note_ignored(what: &str, ignored: &std::collections::BTreeMap<String, usize>, verbose: bool) {
+    if ignored.is_empty() {
+        return;
+    }
+    let mut by_count: Vec<(&String, &usize)> = ignored.iter().collect();
+    by_count.sort_by(|a, b| b.1.cmp(a.1).then(a.0.cmp(b.0)));
+    let total: usize = ignored.values().sum();
+    let shown: Vec<String> = by_count.iter().take(if verbose { usize::MAX } else { 8 }).map(|(k, n)| format!("[{k}] {n}")).collect();
+    println!("  note: {total} keywords Omsi.exe does not read in a .{what} either (misspellings, keywords of other files), ignored as the original does: {}", shown.join(", "));
 }
 
 fn check_vehicles(root: &Path, verbose: bool) {
