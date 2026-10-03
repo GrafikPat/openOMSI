@@ -27,6 +27,11 @@ fn sco(kind: &str) -> &'static str {
 }
 
 impl RouteArrows {
+    /// Whether any arrow stands in the world.
+    pub(crate) fn any(&self) -> bool {
+        !self.placed.is_empty()
+    }
+
     /// Twice a second: the arrows of the route ahead stand, the others go.
     pub(crate) fn tick(&mut self, dt: f32, world: &World, renderer: &Renderer, scene: &mut Scene, spots: &[(u64, DVec3, f64, &'static str, String)]) {
         self.wait -= dt;
