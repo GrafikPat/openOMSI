@@ -341,21 +341,47 @@ fn check_models(root: &Path, verbose: bool) {
     report("model.cfg", files.len(), &errors, verbose);
 }
 
+/// The keywords Omsi.exe reads in a .sco (docs/FORMATS.md, "Scenery objects" and "Model"):
+/// an unknown keyword outside this list is one the original ignores as well.
+fn omsi_reads_in_sco(k: &str) -> bool {
+    const SCO: &[&str] = &[
+        "friendlyname", "groups", "onlyeditor", "complexity", "rendertype", "lightmapmapping", "nomaplighting", "nightmapmode", "fixed", "absheight", "collision_mesh",
+        "crossing_heightdeformation", "nocollision", "surface", "switch", "traffic_lights_group", "traffic_light", "phase", "approachdist", "traffic_light_stop", "traffic_light_jump",
+        "splinehelper", "path", "path_2", "use_traffic_light", "blockpath", "crossingproblem", "switchdir", "model", "scriptshare", "varnamelist", "stringvarnamelist", "script",
+        "constfile", "sound", "sound_ai", "paths", "passengercabin", "busstop", "entrypoint", "carpark_p", "trafficlight", "signal", "helparrow", "depot", "petrolstation", "tree",
+        "add_camera_reflexion", "add_camera_reflexion_2", "mass", "momentofintertia", "cog", "boundingbox", "crashmode_pole", "new_attachment", "attach_trans", "attach_rot_x",
+        "attach_rot_y", "attach_rot_z", "maplight", "rail_enh", "third_rail", "triggerbox_new", "triggerbox_setreverb",
+        // the model.cfg vocabulary, read inline
+        "lod", "vfdmaxmin", "detail_factor", "tex_detail_factor", "nodistancecheck", "terrainhole", "ctc", "ctctexture", "scripttexture", "texttexture", "texttexture_enh", "mesh",
+        "item", "setvar", "mesh_ident", "viewpoint", "shadow", "isshadow", "mouseevent", "setbone", "smoothskin", "animparent", "newanim", "origin_trans", "origin_rot_x",
+        "origin_rot_y", "origin_rot_z", "origin_from_mesh", "anim_rot", "anim_trans", "offset", "delay", "maxspeed", "visible", "illumination", "illumination_interior", "light",
+        "light_enh", "light_enh_2", "spotlight", "interiorlight", "texchanges", "matl", "matl_change", "matl_item", "matl_raindropmap", "matl_texadress_mirror", "matl_texadress_clamp",
+        "matl_texadress_border", "matl_texadress_mirroronce", "texcoordtransx", "texcoordtransy", "usescripttexture", "usetexttexture", "alphascale", "matl_freetex", "matl_lightmap",
+        "matl_nightmap", "matl_allcolor", "smoke", "particle_emitter", "ps_attachto", "matl_alpha", "matl_nozwrite", "matl_nozcheck", "matl_zbias", "matl_envmap", "matl_envmaprealtime",
+        "matl_bumpmap", "matl_envmap_mask", "matl_transmap",
+    ];
+    SCO.contains(&k.to_ascii_lowercase().as_str())
+}
+
 fn check_scenery(root: &Path, verbose: bool) {
     let files = files_with_ext(root, &["sco"]);
-    let ignored = std::sync::atomic::AtomicUsize::new(0);
+    // keywords Omsi.exe does not read in a .sco (misspellings such as [collisionsmesh] or
+    // [schadow], .sli or passengercabin keywords put into the object file): the original
+    // ignores them as this loader does, so they are counted and noted, not failures
+    let ignored: std::sync::Mutex<std::collections::BTreeMap<String, usize>> = Default::default();
     let errors: Vec<String> = files
         .par_iter()
         .filter_map(|p| match omsi_scenery::SceneryObject::load(p) {
             Ok(o) => {
-                // `[collisionmesh]` is a misspelling OMSI ignores as well (it knows only
-                // `[collision_mesh]`): the original's own behaviour, noted, not a failure
-                let ignored_by_omsi = |k: &str| k == "collisionmesh";
-                let mut unk: Vec<String> = o.unknown_keywords.iter().filter(|(k, _)| !ignored_by_omsi(k)).map(|(k, l)| format!("[{k}]@{l}")).collect();
-                unk.extend(o.model.unknown_keywords.iter().filter(|(k, _)| !ignored_in_model_cfg(k)).map(|(k, l)| format!("[{k}]@{l}")));
-                if o.unknown_keywords.iter().any(|(k, _)| ignored_by_omsi(k)) {
-                    ignored.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                let mut unk: Vec<String> = Vec::new();
+                for (k, l) in &o.unknown_keywords {
+                    if omsi_reads_in_sco(k) {
+                        unk.push(format!("[{k}]@{l}"));
+                    } else {
+                        *ignored.lock().unwrap().entry(k.clone()).or_default() += 1;
+                    }
                 }
+                unk.extend(o.model.unknown_keywords.iter().filter(|(k, _)| !ignored_in_model_cfg(k)).map(|(k, l)| format!("[{k}]@{l}")));
                 if unk.is_empty() {
                     None
                 } else {
@@ -366,9 +392,13 @@ fn check_scenery(root: &Path, verbose: bool) {
         })
         .collect();
     report("sco", files.len(), &errors, verbose);
-    let n = ignored.load(std::sync::atomic::Ordering::Relaxed);
-    if n > 0 {
-        println!("  note: {n} objects spell [collisionmesh], which Omsi.exe ignores too (no collision shape)");
+    let ignored = ignored.into_inner().unwrap();
+    if !ignored.is_empty() {
+        let mut by_count: Vec<(&String, &usize)> = ignored.iter().collect();
+        by_count.sort_by(|a, b| b.1.cmp(a.1).then(a.0.cmp(b.0)));
+        let total: usize = ignored.values().sum();
+        let shown: Vec<String> = by_count.iter().take(if verbose { usize::MAX } else { 8 }).map(|(k, n)| format!("[{k}] {n}")).collect();
+        println!("  note: {total} keywords Omsi.exe does not read in a .sco either (misspellings, keywords of other files), ignored as the original does: {}", shown.join(", "));
     }
     let files = files_with_ext(root, &["sli"]);
     let errors: Vec<String> = files
