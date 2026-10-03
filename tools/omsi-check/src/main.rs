@@ -301,6 +301,17 @@ fn rel(root: &Path, p: &Path) -> String {
     p.strip_prefix(root).unwrap_or(p).display().to_string()
 }
 
+/// Keywords in a model.cfg that Omsi.exe does not read there either, so the original ignores them
+/// as this loader does: misspellings (`[matl_nowrite]` for `[matl_noZwrite]`, 1097 against 197 073 in
+/// one installation; `[vievpoint]`), and .sco or .sli keywords an author put into the model file
+/// (`[groups]`, `[friendlyname]`, `[nocollision]`, `[fixed]`, `[texture]` ...). Noted, not a failure.
+fn ignored_in_model_cfg(k: &str) -> bool {
+    matches!(
+        k,
+        "matl_nowrite" | "matl_noxwrite" | "matl_noywrite" | "vievpoint" | "viewpont" | "groups" | "friendlyname" | "onlyeditor" | "complexity" | "rendertype" | "lightmapmapping" | "nomaplighting" | "nightmapmode" | "fixed" | "absheight" | "collision_mesh" | "collisionmesh" | "nocollision" | "surface" | "boundingbox" | "texture" | "crossing_heightdeformation"
+    )
+}
+
 fn check_models(root: &Path, verbose: bool) {
     // model.cfg files are those referenced by [model] in .bus/.ovh/.sco/.hum; approximate by
     // every .cfg under a "model" directory plus vehicle Model dirs.
@@ -315,7 +326,7 @@ fn check_models(root: &Path, verbose: bool) {
         .par_iter()
         .filter_map(|p| match omsi_model::Model::load(p) {
             Ok(m) => {
-                let unknown: Vec<String> = m.unknown_keywords.iter().filter(|(k, _)| !matches!(k.as_str(), "passpos" | "drivpos" | "entry" | "exit" | "pathpnt" | "pathlink" | "stepsoundpack" | "texchanges" | "newtexchangemaster" | "entries" | "stamper" | "ticket_sale" | "ticket_sale_money_point" | "ticket_sale_change_point" | "linktonextveh" | "linktoprevveh" | "next_roomheight" | "next_stepsound" | "pathlink_oneway" | "ticket_sale_money_point_2" | "ticket_sale_change_point_2")).map(|(k, l)| format!("[{k}]@{l}")).collect();
+                let unknown: Vec<String> = m.unknown_keywords.iter().filter(|(k, _)| !ignored_in_model_cfg(k) && !matches!(k.as_str(), "passpos" | "drivpos" | "entry" | "exit" | "pathpnt" | "pathlink" | "stepsoundpack" | "texchanges" | "newtexchangemaster" | "entries" | "stamper" | "ticket_sale" | "ticket_sale_money_point" | "ticket_sale_change_point" | "linktonextveh" | "linktoprevveh" | "next_roomheight" | "next_stepsound" | "pathlink_oneway" | "ticket_sale_money_point_2" | "ticket_sale_change_point_2")).map(|(k, l)| format!("[{k}]@{l}")).collect();
                 if unknown.is_empty() && !m.meshes.is_empty() {
                     None
                 } else if m.meshes.is_empty() && unknown.is_empty() {
@@ -341,7 +352,7 @@ fn check_scenery(root: &Path, verbose: bool) {
                 // `[collision_mesh]`): the original's own behaviour, noted, not a failure
                 let ignored_by_omsi = |k: &str| k == "collisionmesh";
                 let mut unk: Vec<String> = o.unknown_keywords.iter().filter(|(k, _)| !ignored_by_omsi(k)).map(|(k, l)| format!("[{k}]@{l}")).collect();
-                unk.extend(o.model.unknown_keywords.iter().map(|(k, l)| format!("[{k}]@{l}")));
+                unk.extend(o.model.unknown_keywords.iter().filter(|(k, _)| !ignored_in_model_cfg(k)).map(|(k, l)| format!("[{k}]@{l}")));
                 if o.unknown_keywords.iter().any(|(k, _)| ignored_by_omsi(k)) {
                     ignored.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
                 }
